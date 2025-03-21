@@ -58,7 +58,7 @@ app.post("/api/upload", upload.single("image"), async (req, res) => {
     }
 
     let filePath = req.file.path; // Local storage path
-    console.log(filePath);
+    console.log("Uploaded human image path:", filePath);
     try {
         // 1️⃣ Step 1: Face Landmark Detection (Python script using OpenCV)
         const processedPath = `uploads/processed_${Date.now()}.png`;
@@ -176,16 +176,19 @@ app.post("/api/uploadtexture", upload.single("texture"), async (req, res) => {
 //         res.status(500).json({ error: error.message });
 //     }
 // });
-
 app.get('/api/getClothingTexture', async (req, res) => {
     try {
-        const latestClothing = await Clothing.findOne().sort({ _id: -1 }); // Get latest item
+        const latestClothing = await Clothing.findOne().sort({ _id: -1 });
         if (!latestClothing) return res.status(404).json({ message: "No clothing found" });
-        res.json({ texturePath: latestClothing.textureUrl });
+        // For user image, we return the processed image URL as full URL
+        const fullUrl = `http://localhost:5000/uploads/${latestClothing.imageUrl.split('/').pop()}`;
+        res.json({ texturePath: fullUrl });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
+
+
 
 app.get("/api/textures", async (req, res) => {
     try {
