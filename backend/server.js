@@ -120,45 +120,10 @@ app.post("/api/uploadtexture", upload.single("texture"), async (req, res) => {
 
         // Generate Three.js texture data
 
-        const generateTexture = async (imagePath) => {
-            try {
-
-                console.log("textrue loaded :", imagePath);
-
-                const canvas = createCanvas(512, 512);
-                const ctx = canvas.getContext("2d");
-        
-                const image = await loadImage(imagePath);
-                ctx.drawImage(image, 0, 0, 512, 512);
-        
-                // Convert canvas to base64 (for frontend rendering)
-                const textureDat = canvas.toDataURL();
-
-                console.log("generate texture working fine");
-                
-                return {
-
-                    texture: textureDat,
-                    object: {
-                        type: "plane",
-                        width: 3.5,
-                        height: 4,
-                    },
-                };
-            } catch (error) {
-                console.error("Error generating Three.js texture:", error);
-                return { error: "Texture generation failed" };
-            }
-            
-        };
-
-        const textureData = await generateTexture(texturePath);
-
         res.json({
             textureUrl: texturePath,
             message: "Texture uploaded successfully!",
-            texture: newTexture,
-            sceneData: textureData, // Send scene info
+            
         });
     } catch (error) {
         console.error("Texture upload error:", error);
@@ -166,16 +131,6 @@ app.post("/api/uploadtexture", upload.single("texture"), async (req, res) => {
     }
 });
 
-// // Endpoint to get a clothing item by id (from MongoDB)
-// app.get('/api/clothes/:id', async (req, res) => {
-//     try {
-//         const item = await Clothing.findById(req.params.id);
-//         if (!item) return res.status(404).json({ message: "Clothing item not found" });
-//         res.json(item);
-//     } catch (error) {
-//         res.status(500).json({ error: error.message });
-//     }
-// });
 app.get('/api/getClothingTexture', async (req, res) => {
     try {
         const latestClothing = await Clothing.findOne().sort({ _id: -1 });
