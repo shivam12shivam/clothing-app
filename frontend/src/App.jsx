@@ -9,9 +9,14 @@ function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [clothingTexture, setClothingTexture] = useState(null);
+  const [shoulderOffset, setShoulderOffset] = useState(0); // Offset to adjust clothing
+  const [clothingSize, setClothingSize] = useState(3.5); // Default size
+  const [humanImageUrl, setHumanImageUrl] = useState(null);
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const clothingRef = useRef(null);
+  const videoRef = useRef(null); // For pose estimation
+
 
   const handleFileChange = (e) => {
     setSelectedFile(e.target.files[0]);
@@ -51,6 +56,7 @@ function App() {
       const fullImageUrl = `http://localhost:5000/uploads/${imagePath.split('/').pop()}`;
       console.log(fullImageUrl);
       initThree(fullImageUrl);
+      setHumanImageUrl(fullImageUrl);
     } catch (error) {
       console.error("Upload error", error);
     } finally {
@@ -58,88 +64,41 @@ function App() {
     }
   }
 
-  const handleTextureUpload = async () => {
-    if (!selectedFile) return;
-    setLoading(true);
-    console.log("insdie heandle textureupload");
-    const formData = new FormData();
-    formData.append("texture", selectedFile);
-    formData.append("name", "Cool Jacket"); // Example clothing name
-    formData.append("description", "Red stylish jacket"); // Example description
 
-    try {
+  // Run pose estimation on the human image when it changes
+  useEffect(() => {
+    if (humanImageUrl) {
+      const img = new Image();
+      img.src = humanImageUrl;
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        runPoseEstimation(img);
+      };
+    }
+  }, [humanImageUrl]);
 
-      const res = await axios.post("http://localhost:5000/api/uploadtexture", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      setLoading(false);
-      setSelectedFile(null);
-      const fullImageUrl = `http://localhost:5000/${res.data.textureUrl.split('/').pop()}`;
-      setClothingTexture(fullImageUrl);
-      console.log("texture_url: ",res.data.textureUrl);
-      console.log("texture_url full image url: ",fullImageUrl);
 
-      // fetchClothingTextures(); // Refresh available clothing textures
-    } catch (error) {
-      setLoading(false);
-      console.error("Texture upload error", error);
+  // Run PoseNet on the uploaded human image to determine shoulder positions
+  const runPoseEstimation = async (imageEl) => {
+    const net = await posenet.load();
+    const pose = await net.estimateSinglePose(imageEl, { flipHorizontal: false });
+    const leftShoulder = pose.keypoints.find(k => k.part === 'leftShoulder');
+    const rightShoulder = pose.keypoints.find(k => k.part === 'rightShoulder');
+
+    if (leftShoulder && rightShoulder) {
+      console.log("Pose detected:", leftShoulder, rightShoulder);
+      // Calculate vertical midpoint and horizontal distance
+      const midY = (leftShoulder.position.y + rightShoulder.position.y) / 2;
+      const offset = (midY / imageEl.height) * 2 - 1; // Normalized vertical offset
+      setShoulderOffset(offset);
+
+      const shoulderWidth = Math.abs(rightShoulder.position.x - leftShoulder.position.x);
+      const normalizedWidth = (shoulderWidth / imageEl.width) * 5; // Scale factor for clothing width
+      setClothingSize(normalizedWidth);
+      console.log("Shoulder offset:", offset, "Clothing size:", normalizedWidth);
     }
   };
 
-  // const fetchClothingTextures = async () => {
-  //   try {
-  //     const response = await axios.get("/api/clothes");
-  //     if (response.data.length > 0) {
-  //       setClothingTexture(response.data[0].imageUrl); // Use first texture
-  //     }
-  //   } catch (error) {
-  //     console.error("Error fetching clothing textures", error);
-  //   }
-  // };
-
-  // useEffect(() => {
-  //   fetchClothingTextures();
-  // }, []);
-
-
-  useEffect(() => {
-    if (clothingTexture && sceneRef.current) {
-      console.log("New clothing texture detected. Updating scene...");
-      const textureLoader = new THREE.TextureLoader();
-
-      textureLoader.load(
-        clothingTexture,
-        (texture) => {
-          console.log("inside texture-loader clothing texture loaded:", texture);
-          const clothingMaterial = new THREE.MeshBasicMaterial({
-            map: texture,
-            side: THREE.DoubleSide,
-            transparent: true
-          });
-
-          // Remove old clothing if it exists
-          if (clothingRef.current) {
-            sceneRef.current.remove(clothingRef.current);
-          }
-
-          // Create new clothing mesh
-          const clothingPlane = new THREE.Mesh(
-            new THREE.PlaneGeometry(3.5, 4),
-            clothingMaterial
-          );
-          clothingPlane.position.set(0, 0, 0.2);
-
-          sceneRef.current.add(clothingPlane);
-          clothingRef.current = clothingPlane;
-        },
-        undefined,
-        (error) => {
-          console.error("Texture loading error for clothing texture:", error);
-          setSelectedFile(null);
-        }
-      );
-    }
-  }, [clothingTexture]);  // This runs whenever clothingTexture updates
 
   // Initialize Three.js scene with human image and overlay clothing texture (if available)
   const initThree = async (userImageUrl) => {
@@ -203,6 +162,9 @@ function App() {
     // Animation loop to render the scene
     const animate = () => {
       requestAnimationFrame(animate);
+      if (clothingRef.current) {
+        clothingRef.current.position.set(0, shoulderOffset, 0.2);
+      }
       renderer.render(scene, camera);
     };
     animate();
@@ -212,21 +174,118 @@ function App() {
   };
 
 
-  // Pose Estimation to Adjust Clothing Position
-  // const estimatePose = async (canvas) => {
-  //   const net = await posenet.load();
-  //   const video = document.createElement('video');
-  //   video.srcObject = await navigator.mediaDevices.getUserMedia({ video: true });
-  //   video.play();
+  const handleTextureUpload = async () => {
+    if (!selectedFile) return;
+    setLoading(true);
+    console.log("insdie heandle textureupload");
+    const formData = new FormData();
+    formData.append("texture", selectedFile);
+    formData.append("name", "Cool Jacket"); // Example clothing name
+    formData.append("description", "Red stylish jacket"); // Example description
 
-  //   video.onloadeddata = async () => {
-  //     const pose = await net.estimateSinglePose(video, { flipHorizontal: false });
-  //     const nose = pose.keypoints.find(p => p.part === 'nose');
-  //     if (clothingRef.current && nose) {
-  //       clothingRef.current.position.y = nose.position.y / 100 - 2;
+    try {
+
+      const res = await axios.post("http://localhost:5000/api/uploadtexture", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      // setLoading(false);
+      const fullImageUrl = `http://localhost:5000/${res.data.textureUrl.split('/').pop()}`;
+      setClothingTexture(fullImageUrl);
+      console.log("texture_url: ", res.data.textureUrl);
+      console.log("texture_url full image url: ", fullImageUrl);
+      setSelectedFile(null);
+      setLoading(false);
+
+      // fetchClothingTextures(); // Refresh available clothing textures
+    } catch (error) {
+      setLoading(false);
+      console.error("Texture upload error", error);
+    }
+  };
+
+
+  // const fetchClothingTextures = async () => {
+  //   try {
+  //     const response = await axios.get("/api/clothes");
+  //     if (response.data.length > 0) {
+  //       setClothingTexture(response.data[0].imageUrl); // Use first texture
   //     }
-  //   };
+  //   } catch (error) {
+  //     console.error("Error fetching clothing textures", error);
+  //   }
   // };
+
+  // useEffect(() => {
+  //   fetchClothingTextures();
+  // }, []);
+
+
+  // Update the clothing texture in the scene when clothingTexture or pose values change
+  useEffect(() => {
+    if (clothingTexture && sceneRef.current) {
+      console.log("🆕 New clothing texture detected. Updating scene...");
+      console.log("🔍 sceneRef.current:", sceneRef.current);
+
+      const textureLoader = new THREE.TextureLoader();
+      textureLoader.load(
+        clothingTexture,
+        (texture) => {
+          console.log("✅ Clothing texture loaded:", texture);
+
+          // Enable transparency for better masking
+          texture.flipY = false;
+          texture.encoding = THREE.sRGBEncoding;
+
+          const clothingMaterial = new THREE.MeshStandardMaterial({
+            map: texture,
+            side: THREE.DoubleSide,
+            transparent: true,  // Allows transparency
+            alphaTest: 0.5       // Filters out transparent pixels
+          });
+
+          // ✅ Replace square plane with a body-shaped geometry
+          const clothingShape = new THREE.Shape();
+          clothingShape.moveTo(-0.3, 0.5);
+          clothingShape.lineTo(0.3, 0.5);
+          clothingShape.lineTo(0.4, -0.5);
+          clothingShape.lineTo(-0.4, -0.5);
+          clothingShape.lineTo(-0.3, 0.5);
+
+          const extrudeSettings = { depth: 0.01, bevelEnabled: false };
+          const clothingGeometry = new THREE.ExtrudeGeometry(clothingShape, extrudeSettings);
+
+          // Create a new clothing mesh
+          const clothingPlane = new THREE.Mesh(clothingGeometry, clothingMaterial);
+
+          // Initial positioning (adjust Y offset for better alignment)
+          clothingPlane.position.set(0, shoulderOffset, 0.2);
+          console.log(`🎯 Initial clothing position → X: 0, Y: ${shoulderOffset}, Z: 0.2`);
+
+          // Add to scene
+          sceneRef.current.add(clothingPlane);
+          clothingRef.current = clothingPlane;
+
+          // Debugging: Track position changes in real-time
+          animateClothing(clothingPlane);
+        },
+        undefined,
+        (error) => {
+          console.error("❌ Texture loading error:", error);
+        }
+      );
+    }
+  }, [clothingTexture]);
+
+  function animateClothing(clothingPlane) {
+    function update() {
+      if (clothingRef.current) {
+        console.log(`📌 Clothing Position → X: ${clothingPlane.position.x}, Y: ${clothingPlane.position.y}, Z: ${clothingPlane.position.z}`);
+      }
+      requestAnimationFrame(update);
+    }
+    update();
+  }
+
 
 
   return (
