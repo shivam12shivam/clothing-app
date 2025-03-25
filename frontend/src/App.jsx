@@ -1,327 +1,184 @@
-import { useState, useEffect, useRef } from 'react'
-import './App.css'
-import axios from "axios";
-import * as THREE from "three";
-import '@tensorflow/tfjs';
-import * as posenet from '@tensorflow-models/posenet';
+import { useState } from 'react';
+import axios from 'axios';
+import './App.css';
 
 function App() {
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [clothingTexture, setClothingTexture] = useState(null);
-  const [shoulderOffset, setShoulderOffset] = useState(0); // Offset to adjust clothing
-  const [clothingSize, setClothingSize] = useState(3.5); // Default size
-  const [humanImageUrl, setHumanImageUrl] = useState(null);
-  const canvasRef = useRef(null);
-  const sceneRef = useRef(null);
-  const clothingRef = useRef(null);
-  const videoRef = useRef(null); // For pose estimation
+  const [humanImage, setHumanImage] = useState(null);
+  const [clothingImage, setClothingImage] = useState(null);
+  const [resultImage, setResultImage] = useState(null);
+  const [uploadingHuman, setUploadingHuman] = useState(false);
+  const [uploadingClothing, setUploadingClothing] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [error, setError] = useState(null);
 
-
-  const handleFileChange = (e) => {
-    setSelectedFile(e.target.files[0]);
+  const validateImage = (file) => {
+    const validTypes = ['image/png', 'image/jpeg', 'image/webp'];
+    if (!validTypes.includes(file.type)) {
+      setError('Only PNG, JPEG, and WEBP formats allowed');
+      return false;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setError('File size must be less than 5MB');
+      return false;
+    }
+    return true;
   };
 
-  const handleTextureChange = (e) => {
-    setSelectedFile(e.target.files[0]);
-  };
+  const handleHumanUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !validateImage(file)) return;
 
-  useEffect(() => {
-    axios.get('/api/getClothingTexture')
-      .then(response => {
-        console.log("Fetched texture path:", response.data.texturePath);
-        setClothingTexture(response.data.texturePath);
-      })
-      .catch(error => console.error('Clothing fetch error', error));
-  }, []);
-
-
-
-  const handleUpload = async () => {
-    if (!selectedFile) return;
-    setLoading(true);
+    setUploadingHuman(true);
+    setError(null);
     const formData = new FormData();
-    formData.append("image", selectedFile);
+    formData.append('image', file);
 
     try {
-      const response = await axios.post("http://localhost:5000/api/upload", formData, {
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
+      // Generate preview immediately
+      const previewUrl = URL.createObjectURL(file);
+      
+      // Upload to server
+      const res = await axios.post('http://localhost:5000/api/upload-human', formData);
+      
+      // Set both preview and server URL
+      setHumanImage({
+        preview: previewUrl,
+        serverUrl: res.data.humanUrl
       });
 
-      const imagePath = response.data.imageUrl;
-      console.log("Processed image path from backend:", imagePath);
-      // Construct full URL so it can be loaded from backend
-      const fullImageUrl = `http://localhost:5000/uploads/${imagePath.split('/').pop()}`;
-      console.log(fullImageUrl);
-      initThree(fullImageUrl);
-      setHumanImageUrl(fullImageUrl);
     } catch (error) {
-      console.error("Upload error", error);
+      setError(error.response?.data?.error || 'Human upload failed');
     } finally {
-      setLoading(false);
-    }
-  }
-
-
-  // Run pose estimation on the human image when it changes
-  useEffect(() => {
-    if (humanImageUrl) {
-      const img = new Image();
-      img.src = humanImageUrl;
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        runPoseEstimation(img);
-      };
-    }
-  }, [humanImageUrl]);
-
-
-  // Run PoseNet on the uploaded human image to determine shoulder positions
-  const runPoseEstimation = async (imageEl) => {
-    const net = await posenet.load();
-    const pose = await net.estimateSinglePose(imageEl, { flipHorizontal: false });
-    const leftShoulder = pose.keypoints.find(k => k.part === 'leftShoulder');
-    const rightShoulder = pose.keypoints.find(k => k.part === 'rightShoulder');
-
-    if (leftShoulder && rightShoulder) {
-      console.log("Pose detected:", leftShoulder, rightShoulder);
-      // Calculate vertical midpoint and horizontal distance
-      const midY = (leftShoulder.position.y + rightShoulder.position.y) / 2;
-      const offset = (midY / imageEl.height) * 2 - 1; // Normalized vertical offset
-      setShoulderOffset(offset);
-
-      const shoulderWidth = Math.abs(rightShoulder.position.x - leftShoulder.position.x);
-      const normalizedWidth = (shoulderWidth / imageEl.width) * 5; // Scale factor for clothing width
-      setClothingSize(normalizedWidth);
-      console.log("Shoulder offset:", offset, "Clothing size:", normalizedWidth);
+      setUploadingHuman(false);
     }
   };
 
+  // Similar fix for handleClothingUpload
+  const handleClothingUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !validateImage(file)) return;
 
-  // Initialize Three.js scene with human image and overlay clothing texture (if available)
-  const initThree = async (userImageUrl) => {
-    const canvas = canvasRef.current;
-    if (!canvas) {
-      console.log("Canvas not found inside initThree");
-      return;
-    }
-
-    console.log("Inside initThree function, loading user image from:", userImageUrl);
-
-    // Set renderer dimensions
-    const width = window.innerWidth * 0.8;
-    const height = window.innerHeight * 0.6;
-    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
-    renderer.setSize(width, height);
-    canvas.style.border = "2px solid red"; // Debug border
-
-    // Clear previous scene if exists
-    if (sceneRef.current) {
-      while (sceneRef.current.children.length > 0) {
-        sceneRef.current.remove(sceneRef.current.children[0]);
-      }
-    }
-
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x333333);
-    sceneRef.current = scene;
-
-    const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
-    camera.position.z = 3; // Adjust camera
-
-    const textureLoader = new THREE.TextureLoader();
-
-    // Load the human image texture
-    textureLoader.load(
-      userImageUrl,
-      (texture) => {
-        console.log("User texture loaded:", texture);
-        const imageAspect = texture.image.width / texture.image.height;
-
-        // Reduce the size of the plane while keeping the aspect ratio
-        const baseSize = 5; // Adjust this value to control overall size
-        const planeWidth = baseSize;
-        const planeHeight = planeWidth / imageAspect;
-
-        const userPlane = new THREE.Mesh(
-          new THREE.PlaneGeometry(planeWidth, planeHeight),
-          new THREE.MeshBasicMaterial({ map: texture })
-        );
-
-        scene.add(userPlane);
-      },
-      undefined,
-      (error) => {
-        console.error("Texture loading error for user image:", error);
-      }
-    );
-
-
-    // Animation loop to render the scene
-    const animate = () => {
-      requestAnimationFrame(animate);
-      if (clothingRef.current) {
-        clothingRef.current.position.set(0, shoulderOffset, 0.2);
-      }
-      renderer.render(scene, camera);
-    };
-    animate();
-
-    setLoading(false);
-    console.log("initThree function ended");
-  };
-
-
-  const handleTextureUpload = async () => {
-    if (!selectedFile) return;
-    setLoading(true);
-    console.log("insdie heandle textureupload");
+    setUploadingClothing(true);
+    setError(null);
     const formData = new FormData();
-    formData.append("texture", selectedFile);
-    formData.append("name", "Cool Jacket"); // Example clothing name
-    formData.append("description", "Red stylish jacket"); // Example description
+    formData.append('image', file);
 
     try {
-
-      const res = await axios.post("http://localhost:5000/api/uploadtexture", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
+      const previewUrl = URL.createObjectURL(file);
+      const res = await axios.post('http://localhost:5000/api/upload-clothing', formData);
+      
+      setClothingImage({
+        preview: previewUrl,
+        serverUrl: res.data.clothingUrl
       });
-      // setLoading(false);
-      const fullImageUrl = `http://localhost:5000/${res.data.textureUrl.split('/').pop()}`;
-      setClothingTexture(fullImageUrl);
-      console.log("texture_url: ", res.data.textureUrl);
-      console.log("texture_url full image url: ", fullImageUrl);
-      setSelectedFile(null);
-      setLoading(false);
-
-      // fetchClothingTextures(); // Refresh available clothing textures
     } catch (error) {
-      setLoading(false);
-      console.error("Texture upload error", error);
+      setError(error.response?.data?.error || 'Clothing upload failed');
+    } finally {
+      setUploadingClothing(false);
     }
   };
 
 
-  // const fetchClothingTextures = async () => {
-  //   try {
-  //     const response = await axios.get("/api/clothes");
-  //     if (response.data.length > 0) {
-  //       setClothingTexture(response.data[0].imageUrl); // Use first texture
-  //     }
-  //   } catch (error) {
-  //     console.error("Error fetching clothing textures", error);
-  //   }
-  // };
+  const processOutfit = async () => {
+    if (!humanImage || !clothingImage) return;
 
-  // useEffect(() => {
-  //   fetchClothingTextures();
-  // }, []);
-
-
-  // Update the clothing texture in the scene when clothingTexture or pose values change
-  useEffect(() => {
-    if (clothingTexture && sceneRef.current) {
-      console.log("🆕 New clothing texture detected. Updating scene...");
-      console.log("🔍 sceneRef.current:", sceneRef.current);
-
-      const textureLoader = new THREE.TextureLoader();
-      textureLoader.load(
-        clothingTexture,
-        (texture) => {
-          console.log("✅ Clothing texture loaded:", texture);
-
-          // Enable transparency for better masking
-          texture.flipY = false;
-          texture.encoding = THREE.sRGBEncoding;
-
-          const clothingMaterial = new THREE.MeshStandardMaterial({
-            map: texture,
-            side: THREE.DoubleSide,
-            transparent: true,  // Allows transparency
-            alphaTest: 0.5       // Filters out transparent pixels
-          });
-
-          // ✅ Replace square plane with a body-shaped geometry
-          const clothingShape = new THREE.Shape();
-          clothingShape.moveTo(-0.3, 0.5);
-          clothingShape.lineTo(0.3, 0.5);
-          clothingShape.lineTo(0.4, -0.5);
-          clothingShape.lineTo(-0.4, -0.5);
-          clothingShape.lineTo(-0.3, 0.5);
-
-          const extrudeSettings = { depth: 0.01, bevelEnabled: false };
-          const clothingGeometry = new THREE.ExtrudeGeometry(clothingShape, extrudeSettings);
-
-          // Create a new clothing mesh
-          const clothingPlane = new THREE.Mesh(clothingGeometry, clothingMaterial);
-
-          // Initial positioning (adjust Y offset for better alignment)
-          clothingPlane.position.set(0, shoulderOffset, 0.2);
-          console.log(`🎯 Initial clothing position → X: 0, Y: ${shoulderOffset}, Z: 0.2`);
-
-          // Add to scene
-          sceneRef.current.add(clothingPlane);
-          clothingRef.current = clothingPlane;
-
-          // Debugging: Track position changes in real-time
-          animateClothing(clothingPlane);
-        },
-        undefined,
-        (error) => {
-          console.error("❌ Texture loading error:", error);
-        }
-      );
+    setProcessing(true);
+    setError(null);
+    try {
+      const res = await axios.post('http://localhost:5000/api/process-outfit', {
+        humanUrl: humanImage.serverUrl, // Use the server URL from state
+        clothingUrl: clothingImage.serverUrl // Use the server URL from state
+      });
+      setResultImage(res.data.resultUrl);
+      // console.log(res.data.resultUrl);
+    } catch (error) {
+      setError(error.response?.data?.error || 'Processing failed');
+      console.error('Processing error:', error);
+    } finally {
+      setProcessing(false);
     }
-  }, [clothingTexture]);
-
-  function animateClothing(clothingPlane) {
-    function update() {
-      if (clothingRef.current) {
-        console.log(`📌 Clothing Position → X: ${clothingPlane.position.x}, Y: ${clothingPlane.position.y}, Z: ${clothingPlane.position.z}`);
-      }
-      requestAnimationFrame(update);
-    }
-    update();
-  }
-
+  };
 
 
   return (
-    <>
-      <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white p-4">
-        <h1 className="text-3xl font-bold mb-6 text-center">Virtual Try-On Clothing App</h1>
-        {loading && <p className="text-red-500 font-semibold mt-2">Loading...</p>}
-        <div className="flex flex-col items-center gap-4">
-          {/* Human Image Upload */}
+    <div className="app">
+      <h1 className='text-2xl text-black font-bold'> Virtual Try-On</h1>
+      {error && <div className="error-banner">{error}</div>}
+
+      <div className="upload-section">
+        <div className="upload-card">
+          <h3>Upload Human Image</h3>
+          <input
+            className='bg-fuchsia-800'
+            type="file"
+            onChange={handleHumanUpload}
+            accept="image/png, image/jpeg, image/webp"
+            disabled={uploadingHuman}
+          />
+          {uploadingHuman && <p>Uploading human image...</p>}
+          {humanImage && (
+            <img
+              src={humanImage.preview}
+              alt="Human Preview"
+              className="preview-image"
+            />
+          )}
+        </div>
+
+        <div className="upload-card">
+          <h3>Upload Clothing Image</h3>
           <input
             type="file"
-            className="file:border file:border-gray-300 file:bg-gray-800 file:text-white file:rounded-lg px-4 py-2"
-            onChange={handleFileChange}
+            onChange={handleClothingUpload}
+            accept="image/png, image/jpeg, image/webp"
+            disabled={uploadingClothing}
           />
-          <button
-            onClick={handleUpload}
-            className="bg-blue-600 hover:cursor-pointer hover:bg-blue-500 text-white font-semibold py-2 px-6 rounded-lg transition disabled:bg-gray-600"
-            disabled={!selectedFile || loading}
-          >
-            {loading ? "Processing..." : "Upload and Try On"}
-          </button>
+          {uploadingClothing && <p>Uploading clothing...</p>}
+          {clothingImage && (
+            <img
+              src={clothingImage.preview}
+              alt="Clothing Preview"
+              className="preview-image"
+            />
+          )}
         </div>
-
-        <div>
-          {/* Clothing Texture Upload */}
-          <h2 className="mt-6 text-xl font-semibold">Upload Clothing Texture</h2>
-          <input type="file" onChange={handleTextureChange} className="mt-2 p-2 border rounded" />
-          <button onClick={handleTextureUpload} className="ml-2 bg-green-500 hover:cursor-pointer text-white p-2 rounded">
-            {loading ? "Uploading..." : "Upload Clothing"}
-          </button>
-        </div>
-
-        <canvas ref={canvasRef} className="mt-6 border-2 border-gray-400 rounded-lg shadow-lg"></canvas>
       </div>
-    </>
-  )
+
+      <button
+        onClick={processOutfit}
+        disabled={!humanImage || !clothingImage || processing}
+        className="process-button hover:cursor-pointer bg-green-400"
+      >
+        {processing ? (
+          <>
+            <span className="spinner"></span>
+            Processing...
+          </>
+        ) : 'Try On Outfit'}
+      </button>
+
+      {resultImage && (
+        <div className="result-section">
+          <h2>Result</h2>
+          <img
+            src={resultImage}
+            alt="Virtual Try-On Result"
+            className="result-image"
+          />
+          <div className="result-actions">
+            <button className="download-btn">Download Result</button>
+            <button className="reset-btn" onClick={() => {
+              setHumanImage(null);
+              setClothingImage(null);
+              setResultImage(null);
+            }}>
+              Start Over
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
-export default App
+export default App;
